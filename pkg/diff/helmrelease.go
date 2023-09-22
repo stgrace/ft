@@ -51,7 +51,7 @@ type Git interface {
 type Helm interface {
 	AddRepo(name string, url string, extraArgs []string) error
 	Version() (string, error)
-	TemplateWithValues(string, *v1.JSON, string, string) (string, error)
+	TemplateWithValues(string, *v1.JSON, string, string, string) (string, error)
 }
 
 // DirectoryLister is the interface
@@ -84,7 +84,9 @@ type AccountValidator interface {
 }
 
 type DiffResult struct {
-	HelmRelease *helmspec.HelmRelease
+	NewHelmRelease HelmRelease
+	OldHelmRelease HelmRelease
+	Diff           string
 }
 
 type HelmRelease struct {
@@ -216,6 +218,22 @@ func (t *Testing) getOldHelmReleaseVersion(chartPath string) (*HelmRelease, erro
 
 func (t *Testing) processHelmReleases(helmReleases []*HelmRelease) ([]*DiffResult, error) {
 	var results []*DiffResult
+	repoArgs := map[string][]string{}
+	for _, repo := range t.config.HelmRepoExtraArgs {
+		repoSlice := strings.SplitN(repo, "=", 2)
+		name := repoSlice[0]
+		repoExtraArgs := strings.Fields(repoSlice[1])
+		repoArgs[name] = repoExtraArgs
+	}
+	for _, repo := range t.config.ChartRepos {
+		repoSlice := strings.SplitN(repo, "=", 2)
+		name := repoSlice[0]
+		url := repoSlice[1]
+		repoExtraArgs := repoArgs[name]
+		if err := t.helm.AddRepo(name, url, repoExtraArgs); err != nil {
+			return nil, fmt.Errorf("failed adding repo: %s=%s: %w", name, url, err)
+		}
+	}
 	for _, helmRelease := range helmReleases {
 		// Check for old HelmRelease
 		oldHelmRelease, err := t.getOldHelmReleaseVersion(t.computePreviousRevisionPath(helmRelease.Path))
@@ -224,6 +242,7 @@ func (t *Testing) processHelmReleases(helmReleases []*HelmRelease) ([]*DiffResul
 		}
 		if oldHelmRelease == nil {
 			log.Debug("Found a new chart, skipping diff")
+			log.Debugf("Helm release path: %s", helmRelease.Path)
 			continue
 		}
 		result, err := t.checkDiff(oldHelmRelease, helmRelease)
@@ -245,16 +264,17 @@ func (t *Testing) computeCurrentRevisionPath(fileOrDirPath string) string {
 }
 
 func (t *Testing) checkDiff(oldHelmRelease, newHelmRelease *HelmRelease) (*DiffResult, error) {
-	oldTemplate, err := t.helm.TemplateWithValues(oldHelmRelease.Path, oldHelmRelease.HelmRelease.Spec.Values, oldHelmRelease.HelmRelease.Spec.Chart.Spec.Chart, oldHelmRelease.HelmRelease.Spec.Chart.Spec.Version)
+	oldTemplate, err := t.helm.TemplateWithValues(oldHelmRelease.Path, oldHelmRelease.HelmRelease.Spec.Values, oldHelmRelease.HelmRelease.Spec.Chart.Spec.SourceRef.Name, oldHelmRelease.HelmRelease.Spec.Chart.Spec.Chart, oldHelmRelease.HelmRelease.Spec.Chart.Spec.Version)
 	if err != nil {
 		return nil, err
 	}
 	fmt.Printf("Old template:\n %v", oldTemplate)
-	newTemplate, err := t.helm.TemplateWithValues(newHelmRelease.Path, newHelmRelease.HelmRelease.Spec.Values, newHelmRelease.HelmRelease.Spec.Chart.Spec.Chart, newHelmRelease.HelmRelease.Spec.Chart.Spec.Version)
+	newTemplate, err := t.helm.TemplateWithValues(newHelmRelease.Path, newHelmRelease.HelmRelease.Spec.Values, newHelmRelease.HelmRelease.Spec.Chart.Spec.SourceRef.Name, newHelmRelease.HelmRelease.Spec.Chart.Spec.Chart, newHelmRelease.HelmRelease.Spec.Chart.Spec.Version)
 	if err != nil {
 		return nil, err
 	}
 	fmt.Printf("New template:\n %v", newTemplate)
-	fmt.Println(diff.Diff(oldTemplate, newTemplate))
-	return nil, nil
+	helmDiff := diff.Diff(oldTemplate, newTemplate)
+	diffResult := &DiffResult{*newHelmRelease, *oldHelmRelease, helmDiff}
+	return diffResult, nil
 }

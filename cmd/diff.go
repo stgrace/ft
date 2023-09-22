@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"io/ioutil"
+	"os"
 
 	flag "github.com/spf13/pflag"
 
@@ -10,6 +12,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	chartdiff "github.com/stgrace/ft/pkg/diff"
+	tool "github.com/stgrace/ft/pkg/tool"
 )
 
 var (
@@ -90,6 +93,22 @@ func diff(cmd *cobra.Command, _ []string) error {
 	}
 
 	log.Infof("Received results from diff check: %s", results)
-	
+
+	markdown := tool.Markdown{}
+	markdown.AddH1("Helm diff")
+	for _, result := range results {
+		markdown.
+			AddH2(result.NewHelmRelease.HelmRelease.Name).
+			AddDiffBlock(result.Diff)
+	}
+	log.Debug(markdown.MarkdownDoc)
+	err = os.MkdirAll("markdown", 0755)
+	if err != nil {
+		log.Errorf("Error creating markdown folder: %v", err)
+	}
+	err = ioutil.WriteFile("markdown/doc.md", []byte(markdown.MarkdownDoc), 0644)
+	if err != nil {
+		log.Errorf("Error creating markdown folder: %v", err)
+	}
 	return nil
 }
